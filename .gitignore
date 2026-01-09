@@ -1,0 +1,62 @@
+# Composer
+/vendor/
+composer.lock
+
+# Certificados e arquivos sensíveis
+*.pfx
+*.p12
+*.pem
+*.key
+/certs/
+
+# Arquivos de configuração local
+.env
+.env.local
+config.local.php
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+/logs/
+
+# Cache
+/cache/
+*.cache
+
+# Temporários
+/tmp/
+*.tmp
+*.temp
+/temp/
+
+# XMLs gerados (opcional - descomentar se não quiser versionar)
+# *.xml
+# !docs/**/*.xml
+
+# Backup
+*.bak
+*.backup
+
+# Testes
+/phpunit.xml
+/.phpunit.result.cache
+/coverage/
+
+# Sistema operacional
+Thumbs.db
+.DS_Store
+*.swp
+
+# Arquivos específicos do projeto
+/nfse_request.json
+
+docs/
+tmp/
+downloads/
