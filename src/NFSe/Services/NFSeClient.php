@@ -54,7 +54,7 @@ class NFSeClient
 
         // Extrai certificado
         $cmd = sprintf(
-            'openssl pkcs12 -in %s -out %s -clcerts -nokeys -passin pass:%s -provider legacy -provider default 2>&1',
+            'openssl pkcs12 -in %s -out %s -clcerts -nokeys -passin pass:%s 2>&1',
             escapeshellarg($pfxFile),
             escapeshellarg($this->certPemFile),
             escapeshellarg($senha)
@@ -67,7 +67,7 @@ class NFSeClient
 
         // Extrai chave privada
         $cmd = sprintf(
-            'openssl pkcs12 -in %s -out %s -nocerts -nodes -passin pass:%s -provider legacy -provider default 2>&1',
+            'openssl pkcs12 -in %s -out %s -nocerts -nodes -passin pass:%s 2>&1',
             escapeshellarg($pfxFile),
             escapeshellarg($this->keyPemFile),
             escapeshellarg($senha)

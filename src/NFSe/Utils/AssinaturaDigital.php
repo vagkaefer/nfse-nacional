@@ -49,9 +49,9 @@ class AssinaturaDigital
 
             file_put_contents($tempPfx, $pfxContent);
 
-            // Converte PFX para PEM usando openssl CLI com provider legacy
+            // Converte PFX para PEM usando openssl CLI
             $cmd = sprintf(
-                'openssl pkcs12 -in %s -out %s -nodes -passin pass:%s -provider legacy -provider default 2>&1',
+                'openssl pkcs12 -in %s -out %s -nodes -passin pass:%s 2>&1',
                 escapeshellarg($tempPfx),
                 escapeshellarg($tempPem),
                 escapeshellarg($this->certificadoSenha)
