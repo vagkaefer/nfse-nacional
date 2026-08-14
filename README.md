@@ -283,6 +283,26 @@ NFSE_CERT_PFX=... NFSE_CERT_SENHA=... NFSE_COD_MUN=... NFSE_CNPJ=... \
   vendor/bin/phpunit --group integration
 ```
 
+## Migração v2.0 → v2.1
+
+A v2.1 adequa a biblioteca à Reforma Tributária do Consumo e ao novo DANFSe.
+Mudanças de compatibilidade:
+
+- `baixarPDF()` gera o DANFSe localmente por padrão. O parâmetro
+  `$sleepSeconds` deu lugar a `$tentarOficial` — **quem passava
+  `sleepSeconds: 20` precisa remover o argumento**. A API oficial foi
+  sobrestada em 03/08/2026 pela NT 008/2026.
+- O DANFSe passou a seguir o layout oficial da NT 008 (v2.0). Quem dependia do
+  visual anterior verá um documento diferente — agora conforme a norma.
+- A opção `footerText` do gerador deixou de existir: o rodapé é definido pela
+  NT. Use `municipios`, `logoPath` e `exibirCanhoto` em `setDanfseOptions()`.
+- Descontos agora saem no grupo `vDescCondIncond`, como exige o schema (antes
+  eram emitidos dentro de `vServPrest`, o que gerava rejeição).
+- `DANFSeDados::extrair()` devolve um array bem maior, com os blocos `issqn`,
+  `federal`, `ibscbs` e `destinatario`; valores monetários já vêm formatados e
+  campos ausentes viram `-`.
+- Emitir com o grupo IBS/CBS exige informar `cNBS` em `setServico()`.
+
 ## Migração v1 → v2
 
 A v2 reorganizou a biblioteca. Principais mudanças de compatibilidade:
@@ -291,8 +311,6 @@ A v2 reorganizou a biblioteca. Principais mudanças de compatibilidade:
 - `AssinaturaDigital` recebe um `NFSe\Certificate\Certificado` no construtor
   (antes recebia caminho e senha do PFX).
 - `NFSeClient::gerarIdDPS()` foi removido — use `NFSe\Utils\Ids::dps()`.
-- `baixarPDF()` gera o DANFSe localmente por padrão; o parâmetro `$sleepSeconds`
-  deu lugar a `$tentarOficial` (a API oficial foi sobrestada em 03/08/2026).
 - `listarNFSePorFaixa()` propaga erros de rede/HTTP (antes eram silenciosamente
   ignorados); apenas 404 é tratado como "não encontrada".
 - O ID do evento de cancelamento é determinístico (`PRE` + chave + `101101`),

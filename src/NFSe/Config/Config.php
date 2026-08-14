@@ -22,7 +22,7 @@ class Config
     public const URL_HOMOLOGACAO_CNC = 'https://adn.producaorestrita.nfse.gov.br/cnc';
     public const URL_HOMOLOGACAO_PDF = 'https://adn.producaorestrita.nfse.gov.br/danfse';
 
-    public const USER_AGENT_PADRAO = 'nfse-nacional-php/2.0';
+    public const USER_AGENT_PADRAO = 'nfse-nacional-php/2.1';
 
     /**
      * A API de geração do DANFSe foi sobrestada nesta data pela Nota Técnica
