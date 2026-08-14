@@ -26,8 +26,9 @@
         "tecnickcom/tcpdf": "^6.10"
     },
     "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.64",
         "phpstan/phpstan": "^2.1",
-        "phpunit/phpunit": "^9.0|^10.0"
+        "phpunit/phpunit": "^10.5"
     },
     "autoload": {
         "psr-4": {
@@ -43,8 +44,9 @@
     "prefer-stable": true,
     "scripts": {
         "test": "phpunit",
-        "check-style": "phpcs src tests",
-        "fix-style": "phpcbf src tests"
+        "cs-check": "php-cs-fixer fix --dry-run --diff",
+        "cs-fix": "php-cs-fixer fix",
+        "phpstan": "phpstan analyse --memory-limit=512M"
     },
     "config": {
         "sort-packages": true,
