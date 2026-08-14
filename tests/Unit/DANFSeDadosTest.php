@@ -46,7 +46,8 @@ final class DANFSeDadosTest extends TestCase
         $this->assertSame('(49) 0000-0000', $prest['telefone']);
         $this->assertSame('contato@example.com', $prest['email']);
         $this->assertSame('RUA DAS FLORES, 410, CENTRO', $prest['endereco']['logradouro']);
-        $this->assertSame('89990-000', $prest['endereco']['cep']);
+        // Máscara de CEP do item 2.4.5 da NT 008: nn.nnn-nnn
+        $this->assertSame('89.990-000', $prest['endereco']['cep']);
         $this->assertSame('4216909', $prest['endereco']['codigoIbge']);
 
         // O DANFSe exibe a descrição das opções, não o código (NT 008, 2.4.5)
@@ -68,7 +69,7 @@ final class DANFSeDadosTest extends TestCase
         $this->assertSame('TOMADOR EXEMPLO LTDA', $tom['nome']);
         // O complemento integra o endereço concatenado do DANFSe
         $this->assertSame('AVENIDA PRINCIPAL, 141, SALA 1403, CENTRO', $tom['endereco']['logradouro']);
-        $this->assertSame('89802-112', $tom['endereco']['cep']);
+        $this->assertSame('89.802-112', $tom['endereco']['cep']);
         $this->assertSame('4204202', $tom['endereco']['municipio']);
     }
 
@@ -79,10 +80,12 @@ final class DANFSeDadosTest extends TestCase
         // Código nacional e municipal são concatenados no mesmo campo
         $this->assertSame('01.06.01 / -', $dados['servico']['codigoTributacao']);
         $this->assertSame('CONSULTORIA EM TECNOLOGIA DA INFORMACAO', $dados['servico']['descricao']);
-        $this->assertStringContainsString('Cidade Destino', (string) $dados['servico']['localPrestacao']);
+        // "Local da Prestação / Sigla UF / País" com a UF derivada do código
+        // IBGE e traço no país ausente (NT 008, item 2.4.5)
+        $this->assertSame('Cidade Destino / SC / -', $dados['servico']['localPrestacao']);
 
-        $this->assertSame(1500.50, $dados['valores']['valorServico']);
-        $this->assertSame(1500.50, $dados['valores']['valorLiquido']);
+        $this->assertSame('R$ 1.500,50', $dados['valores']['valorServico']);
+        $this->assertSame('R$ 1.500,50', $dados['valores']['valorLiquido']);
         $this->assertSame('1', $dados['valores']['tribISSQN']);
         $this->assertSame('1', $dados['valores']['retencaoISSQN']);
         $this->assertSame(13.45, $dados['valores']['totTribSN']);
@@ -129,9 +132,21 @@ final class DANFSeDadosTest extends TestCase
         $this->assertSame('R$ 2,25', $ibsCbs['valorTotalIbs']);
         $this->assertSame('R$ 13,50', $ibsCbs['valorTotalCbs']);
 
-        // vTotNF = líquido + IBS + CBS
-        $this->assertSame(15.75, $dados['valores']['totalIbsCbs']);
-        $this->assertSame(1516.25, $dados['valores']['valorLiquidoComIbsCbs']);
+        $this->assertSame('R$ 15,75', $dados['valores']['totalIbsCbs']);
+        // vTotNF lido direto da tag calculada pela Sefin
+        $this->assertSame('R$ 1.516,25', $dados['valores']['valorLiquidoComIbsCbs']);
+    }
+
+    /**
+     * Sem o grupo IBSCBS no XML não há vTotNF: o campo imprime traço
+     * (NT 008, nota 12), sem fallback aritmético.
+     */
+    public function testValorLiquidoComIbsCbsSemGrupoViraTraco(): void
+    {
+        $dados = $this->extrair();
+
+        $this->assertSame(DANFSeDados::TRACO, $dados['valores']['totalIbsCbs']);
+        $this->assertSame(DANFSeDados::TRACO, $dados['valores']['valorLiquidoComIbsCbs']);
     }
 
     /**
@@ -145,18 +160,95 @@ final class DANFSeDadosTest extends TestCase
     }
 
     /**
-     * A linha dos totais aproximados é obrigatória e fixa (NT 008, nota 10).
+     * A linha dos totais aproximados é obrigatória, fixa e separada das demais
+     * informações complementares (NT 008, nota 10). O pTotTribSN do Simples
+     * Nacional não alimenta os campos Federais/Estaduais/Municipais: sem
+     * vTotTrib/pTotTrib, imprime traços — como faz o portal nacional.
      */
-    public function testInformacoesComplementaresIncluemTotaisAproximados(): void
+    public function testInformacoesComplementaresETotaisAproximados(): void
     {
         $dados = $this->extrair();
-        $partes = $dados['informacoesComplementares'];
 
-        $this->assertStringContainsString('Inf. Cont.: PAGAMENTO VIA PIX', implode(' | ', $partes));
         $this->assertStringContainsString(
-            'Totais Aproximados dos Tributos cfe. Lei nº 12.741/2012',
-            (string) end($partes),
+            'Inf. Cont.: PAGAMENTO VIA PIX',
+            implode(' | ', $dados['informacoesComplementares']),
         );
+        $this->assertSame(
+            'Totais Aproximados dos Tributos cfe. Lei nº 12.741/2012: '
+                . 'Federais: -; Estaduais: -; Municipais: -;',
+            $dados['linhaTotaisAproximados'],
+        );
+    }
+
+    public function testTotaisAproximadosComValoresEComPercentuais(): void
+    {
+        $xml = (string) file_get_contents(__DIR__ . '/../Fixtures/nfse-exemplo.xml');
+
+        $comValores = str_replace(
+            '<totTrib><pTotTribSN>13.45</pTotTribSN></totTrib>',
+            '<totTrib><vTotTrib><vTotTribFed>10.00</vTotTribFed>'
+                . '<vTotTribEst>0.00</vTotTribEst><vTotTribMun>30.05</vTotTribMun></vTotTrib></totTrib>',
+            $xml,
+        );
+        $this->assertSame(
+            'Totais Aproximados dos Tributos cfe. Lei nº 12.741/2012: '
+                . 'Federais: R$ 10,00; Estaduais: R$ 0,00; Municipais: R$ 30,05;',
+            DANFSeDados::extrair($comValores)['linhaTotaisAproximados'],
+        );
+
+        $comPercentuais = str_replace(
+            '<totTrib><pTotTribSN>13.45</pTotTribSN></totTrib>',
+            '<totTrib><pTotTrib><pTotTribFed>6.00</pTotTribFed>'
+                . '<pTotTribEst>0.00</pTotTribEst><pTotTribMun>2.00</pTotTribMun></pTotTrib></totTrib>',
+            $xml,
+        );
+        $this->assertSame(
+            'Totais Aproximados dos Tributos cfe. Lei nº 12.741/2012: '
+                . 'Federais: 6,00%; Estaduais: 0,00%; Municipais: 2,00%;',
+            DANFSeDados::extrair($comPercentuais)['linhaTotaisAproximados'],
+        );
+    }
+
+    /**
+     * Telefone e e-mail do prestador vêm de DPS/infDPS/prest (caminho da
+     * NT 008), não do emit — os XML reais divergem entre os dois nós.
+     */
+    public function testTelefoneEEmailDoPrestadorVemDaDps(): void
+    {
+        $xml = (string) file_get_contents(__DIR__ . '/../Fixtures/nfse-exemplo.xml');
+        $xml = str_replace(
+            '<prest><CNPJ>11222333000181</CNPJ><fone>4900000000</fone><email>contato@example.com</email>',
+            '<prest><CNPJ>11222333000181</CNPJ><fone>49999561125</fone><email>nf@example.com</email>',
+            $xml,
+        );
+
+        $prest = DANFSeDados::extrair($xml)['prestador'];
+
+        $this->assertSame('(49) 99956-1125', $prest['telefone']);
+        $this->assertSame('nf@example.com', $prest['email']);
+    }
+
+    /**
+     * Nota 5 da NT 008: as linhas opcionais do ISSQN são suprimíveis quando
+     * todos os campos estão sem dados (regEspTrib = 0 conta como sem dado).
+     */
+    public function testLinhasOpcionaisDoIssqnDetectadasComoVazias(): void
+    {
+        $dados = $this->extrair();
+
+        $this->assertTrue($dados['issqn']['linhaRegimeVazia']);
+        $this->assertTrue($dados['issqn']['linhaBeneficioVazia']);
+
+        $xml = (string) file_get_contents(__DIR__ . '/../Fixtures/nfse-exemplo.xml');
+        $xml = str_replace(
+            '<tribMun><tribISSQN>1</tribISSQN>',
+            '<tribMun><tribISSQN>1</tribISSQN><tpImunidade>4</tpImunidade>',
+            $xml,
+        );
+        $issqn = DANFSeDados::extrair($xml)['issqn'];
+
+        $this->assertFalse($issqn['linhaRegimeVazia']);
+        $this->assertSame('4', $issqn['tipoImunidade']);
     }
 
     public function testXmlInvalidoLancaExcecao(): void

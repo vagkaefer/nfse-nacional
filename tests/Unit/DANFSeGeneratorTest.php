@@ -220,6 +220,131 @@ final class DANFSeGeneratorTest extends TestCase
         $this->assertGreaterThan(5000, strlen($pdf), 'PDF deve conter o QR Code renderizado');
     }
 
+    /**
+     * Campos de coluna simples truncam em 37 caracteres com reticências
+     * (NT 008, item 2.4.5) — como faz o portal nacional.
+     */
+    public function testTruncamentoDe37CaracteresNoSimplesNacional(): void
+    {
+        $texto = $this->textoDoPdf($this->gerar());
+
+        $this->assertStringContainsString('Optante - Microempresa ou Empresa de ...', $texto);
+        $this->assertStringNotContainsString('(ME/EPP)', $texto);
+    }
+
+    /**
+     * As linhas opcionais do bloco ISSQN são suprimidas quando todos os
+     * campos estão sem dados no XML (NT 008, nota 5).
+     */
+    public function testLinhasOpcionaisDoIssqnSaoSuprimidas(): void
+    {
+        $texto = $this->textoDoPdf($this->gerar());
+
+        $this->assertStringNotContainsString('Regime Especial de Tributação do ISSQN', $texto);
+        $this->assertStringNotContainsString('Benefício Municipal', $texto);
+
+        $xml = (string) file_get_contents(__DIR__ . '/../Fixtures/nfse-exemplo.xml');
+        $xml = str_replace(
+            '<tribMun><tribISSQN>1</tribISSQN>',
+            '<tribMun><tribISSQN>1</tribISSQN><tpImunidade>4</tpImunidade>',
+            $xml,
+        );
+        $comImunidade = $this->textoDoPdf((new DANFSeGenerator())->gerarPDF($xml));
+
+        $this->assertStringContainsString('Regime Especial de Tributação do ISSQN', $comImunidade);
+    }
+
+    /**
+     * A linha de PIS/COFINS só é impressa para competências até o fim de 2026
+     * (NT 008, nota 6).
+     */
+    public function testPisCofinsAusenteAposCompetencia2026(): void
+    {
+        $xml = (string) file_get_contents(__DIR__ . '/../Fixtures/nfse-exemplo.xml');
+        $xml = str_replace('<dCompet>2026-01-15</dCompet>', '<dCompet>2027-01-15</dCompet>', $xml);
+
+        $texto = $this->textoDoPdf((new DANFSeGenerator())->gerarPDF($xml));
+
+        $this->assertStringNotContainsString('PIS - Débito Apuração Própria', $texto);
+    }
+
+    /**
+     * Posição vertical (em pontos, a partir do topo) da primeira ocorrência de
+     * uma palavra no PDF, via pdftotext -bbox.
+     */
+    private function posicaoVertical(string $pdf, string $palavra): float
+    {
+        if (self::caminhoPdfToText() === null) {
+            $this->markTestSkipped('pdftotext não disponível para inspecionar o PDF');
+        }
+
+        $arquivo = (string) tempnam(sys_get_temp_dir(), 'danfse_');
+        file_put_contents($arquivo, $pdf);
+
+        try {
+            $saida = (string) shell_exec(escapeshellcmd((string) self::caminhoPdfToText())
+                . ' -bbox ' . escapeshellarg($arquivo) . ' -');
+        } finally {
+            @unlink($arquivo);
+        }
+
+        $this->assertMatchesRegularExpression(
+            '#yMin="([\d.]+)"[^>]*>' . preg_quote($palavra, '#') . '<#u',
+            $saida,
+            "Palavra não encontrada no PDF: {$palavra}",
+        );
+        preg_match('#yMin="([\d.]+)"[^>]*>' . preg_quote($palavra, '#') . '<#u', $saida, $m);
+
+        return (float) $m[1];
+    }
+
+    /**
+     * O canhoto é fixo no pé do formulário (sup 28,10 cm — NT 008, item
+     * 2.4.5), independentemente dos blocos suprimidos acima dele.
+     */
+    public function testCanhotoFixoNoPeDaPagina(): void
+    {
+        // 281 mm do topo = ~796,5 pt
+        $yEsperado = 281.0 / 25.4 * 72;
+
+        $posicao = $this->posicaoVertical($this->gerar(), 'CIENTIFICAÇÃO:');
+        $this->assertEqualsWithDelta($yEsperado, $posicao, 6.0);
+
+        // Com o tomador também suprimido, o canhoto não pode se mover
+        $xml = (string) file_get_contents(__DIR__ . '/../Fixtures/nfse-exemplo.xml');
+        $semTomador = (string) preg_replace('#<toma>.*?</toma>#s', '', $xml);
+        $posicaoSemTomador = $this->posicaoVertical(
+            (new DANFSeGenerator())->gerarPDF($semTomador),
+            'CIENTIFICAÇÃO:',
+        );
+
+        $this->assertEqualsWithDelta($posicao, $posicaoSemTomador, 0.5);
+    }
+
+    /**
+     * Pior caso de conteúdo com máximo de supressões: o documento continua em
+     * página única e sem texto além do formulário.
+     */
+    public function testPaginaUnicaNoPiorCaso(): void
+    {
+        $xml = (string) file_get_contents(__DIR__ . '/../Fixtures/nfse-exemplo.xml');
+        $xml = (string) preg_replace('#<toma>.*?</toma>#s', '', $xml);
+        $xml = str_replace(
+            'CONSULTORIA EM TECNOLOGIA DA INFORMACAO',
+            str_repeat('DESCRICAO LONGA DO SERVICO ', 60),
+            $xml,
+        );
+        $xml = str_replace(
+            'PAGAMENTO VIA PIX',
+            str_repeat('INFORMACAO COMPLEMENTAR EXTENSA ', 80),
+            $xml,
+        );
+
+        $pdf = (new DANFSeGenerator())->gerarPDF($xml);
+
+        $this->assertSame(1, $this->totalDePaginas($pdf));
+    }
+
     public function testXmlInvalidoLancaExcecao(): void
     {
         $gerador = new DANFSeGenerator();

@@ -283,6 +283,26 @@ NFSE_CERT_PFX=... NFSE_CERT_SENHA=... NFSE_COD_MUN=... NFSE_CNPJ=... \
   vendor/bin/phpunit --group integration
 ```
 
+## Mudanças na v2.1.1
+
+A v2.1.1 refaz o DANFSe sobre a grade de coordenadas do item 2.4.5 da NT
+008/2026, reproduzindo o layout do portal nacional. Mudanças de comportamento:
+
+- `DANFSeDados::formatarCep()` usa a máscara da NT (`89.990-000`, antes
+  `89990-000`).
+- Telefone e e-mail do prestador passam a vir de `DPS/infDPS/prest` (caminho
+  da NT), com fallback para `emit`.
+- "Local da Prestação" e "Município de Incidência" incluem a UF
+  (`Município / UF / País`).
+- "Valor Líquido da NFS-e + IBS/CBS" imprime o `vTotNF` do XML; sem o grupo
+  IBS/CBS sai `-` (antes era calculado como `vLiq + IBS + CBS`).
+- A linha "Totais Aproximados dos Tributos" usa apenas `vTotTrib`/`pTotTrib`
+  (o `pTotTribSN` não a preenche mais) e sai em linha própria, na chave
+  `linhaTotaisAproximados` de `DANFSeDados::extrair()`.
+- Truncamentos seguem os limites de caracteres da NT (37/77/167/1297/1997,
+  com reticências); linhas opcionais do bloco ISSQN sem dados são suprimidas;
+  o canhoto é fixo no pé do formulário.
+
 ## Migração v2.0 → v2.1
 
 A v2.1 adequa a biblioteca à Reforma Tributária do Consumo e ao novo DANFSe.
