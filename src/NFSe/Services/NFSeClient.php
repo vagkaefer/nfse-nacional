@@ -29,6 +29,8 @@ class NFSeClient
     private readonly HttpClient $http;
     private readonly AssinaturaDigital $assinatura;
 
+    private ?string $motivoUltimoFallback = null;
+
     public function __construct(
         private readonly Config $config,
         ?HttpClient $http = null,
@@ -130,32 +132,33 @@ class NFSeClient
     }
 
     /**
-     * Baixa o PDF (DANFSe) da NFS-e.
+     * Gera o PDF (DANFSe v2.0) da NFS-e a partir do seu XML.
      *
-     * Tenta o endpoint oficial; em caso de falha (rate limit 429, timeout etc.)
-     * gera o PDF localmente a partir do XML da NFS-e.
+     * A API oficial de geração do DANFSe foi sobrestada em 03/08/2026 pela Nota
+     * Técnica nº 008/2026 — desde então cabe ao emissor produzir o documento.
+     * Por isso o padrão é gerar localmente; `$tentarOficial` existe apenas para
+     * quem ainda queira consultar o endpoint antes (ele responde 5xx).
      *
-     * ATENÇÃO: o endpoint oficial tem rate limiting severo. Se for baixar vários
-     * PDFs em sequência, recomenda-se `$sleepSeconds = 20` entre requisições —
-     * o padrão é 0 para não bloquear o chamador sem necessidade.
-     *
-     * @param string|null $logoPath Logo usado apenas na geração local (fallback)
-     * @param int $sleepSeconds Espera antes da requisição ao endpoint oficial
+     * @param string|null $logoPath Logomarca da NFS-e; nulo usa a embarcada
+     * @param bool $tentarOficial Consulta o endpoint sobrestado antes de gerar
      */
     public function baixarPDF(
         string $chaveAcesso,
         ?string $caminhoArquivo = null,
         ?string $logoPath = null,
-        int $sleepSeconds = 0,
+        bool $tentarOficial = false,
     ): string {
-        if ($sleepSeconds > 0) {
-            sleep($sleepSeconds);
+        $pdfContent = null;
+
+        if ($tentarOficial) {
+            try {
+                $pdfContent = $this->baixarPDFOficial($chaveAcesso);
+            } catch (NFSeException $e) {
+                $this->motivoUltimoFallback = $e->getMessage();
+            }
         }
 
-        try {
-            $pdfContent = $this->baixarPDFOficial($chaveAcesso);
-        } catch (NFSeException) {
-            // Fallback: gera o DANFSe localmente a partir do XML
+        if ($pdfContent === null) {
             $xml = $this->baixarXML($chaveAcesso);
             $gerador = new DANFSeGenerator($this->config->getDanfseOptions());
             $pdfContent = $gerador->gerarPDF($xml, $logoPath);
@@ -166,6 +169,16 @@ class NFSeClient
         }
 
         return $pdfContent;
+    }
+
+    /**
+     * Motivo pelo qual o endpoint oficial não foi usado na última chamada a
+     * baixarPDF() com $tentarOficial — útil para diagnosticar por que o PDF veio
+     * do gerador local. Nulo quando não houve tentativa ou ela teve sucesso.
+     */
+    public function getMotivoUltimoFallback(): ?string
+    {
+        return $this->motivoUltimoFallback;
     }
 
     /**
@@ -257,7 +270,10 @@ class NFSeClient
     }
 
     /**
-     * Baixa o PDF do endpoint oficial (requer mTLS; rate limiting severo).
+     * Baixa o PDF do endpoint oficial (requer mTLS).
+     *
+     * Mantido por compatibilidade: a API está sobrestada desde 03/08/2026
+     * (Config::DANFSE_API_SOBRESTADA_EM) e responde erro.
      */
     private function baixarPDFOficial(string $chaveAcesso): string
     {
