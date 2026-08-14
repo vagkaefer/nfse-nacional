@@ -1,93 +1,68 @@
 <?php
 
+declare(strict_types=1);
+
 namespace NFSe\Config;
 
+use SensitiveParameter;
+
 /**
- * Classe de configuração para integração com Sistema Nacional de NFS-e
+ * Configuração da integração com o Sistema Nacional de NFS-e.
  */
 class Config
 {
-    /**
-     * Ambiente de produção
-     */
     public const AMBIENTE_PRODUCAO = 1;
-
-    /**
-     * Ambiente de homologação
-     */
     public const AMBIENTE_HOMOLOGACAO = 2;
 
-    /**
-     * URLs da API - Produção
-     */
     public const URL_PRODUCAO = 'https://sefin.nfse.gov.br/SefinNacional';
     public const URL_PRODUCAO_CNC = 'https://adn.nfse.gov.br/cnc';
     public const URL_PRODUCAO_PDF = 'https://adn.nfse.gov.br/danfse';
 
-    /**
-     * URLs da API - Homologação/Produção Restrita
-     */
     public const URL_HOMOLOGACAO = 'https://sefin.producaorestrita.nfse.gov.br/SefinNacional';
     public const URL_HOMOLOGACAO_CNC = 'https://adn.producaorestrita.nfse.gov.br/cnc';
     public const URL_HOMOLOGACAO_PDF = 'https://adn.producaorestrita.nfse.gov.br/danfse';
 
-    private $ambiente;
-    private $certificadoPfx;
-    private $certificadoSenha;
-    private $versaoAplicativo;
-    private $codigoMunicipioIBGE;
+    public const USER_AGENT_PADRAO = 'nfse-nacional-php/2.0';
 
     /**
-     * Configuração da integração
-     *
      * @param int $ambiente Ambiente (1 = Produção, 2 = Homologação)
      * @param string $certificadoPfx Caminho do certificado PFX
      * @param string $certificadoSenha Senha do certificado
      * @param string $codigoMunicipioIBGE Código do município (7 dígitos)
      * @param string $versaoAplicativo Versão do aplicativo integrador
+     * @param string $userAgent User-Agent enviado nas requisições HTTP
+     * @param array<string, mixed> $danfseOptions Opções do gerador local de DANFSe
+     *        (chaves: creator, author, footerText, municipios [codIBGE => nome])
      */
     public function __construct(
-        int $ambiente = self::AMBIENTE_HOMOLOGACAO,
-        string $certificadoPfx = '',
-        string $certificadoSenha = '',
-        string $codigoMunicipioIBGE = '',
-        string $versaoAplicativo = '1.0.0'
-    ) {
-        $this->ambiente = $ambiente;
-        $this->certificadoPfx = $certificadoPfx;
-        $this->certificadoSenha = $certificadoSenha;
-        $this->versaoAplicativo = $versaoAplicativo;
-        $this->codigoMunicipioIBGE = $codigoMunicipioIBGE;
-    }
+        private int $ambiente = self::AMBIENTE_HOMOLOGACAO,
+        private string $certificadoPfx = '',
+        #[SensitiveParameter]
+        private string $certificadoSenha = '',
+        private string $codigoMunicipioIBGE = '',
+        private string $versaoAplicativo = '1.0.0',
+        private string $userAgent = self::USER_AGENT_PADRAO,
+        private array $danfseOptions = [],
+    ) {}
 
-    /**
-     * Retorna a URL base da API conforme ambiente
-     */
     public function getUrlBase(): string
     {
-        return $this->ambiente === self::AMBIENTE_PRODUCAO
-            ? self::URL_PRODUCAO
-            : self::URL_HOMOLOGACAO;
+        return $this->porAmbiente(self::URL_PRODUCAO, self::URL_HOMOLOGACAO);
     }
 
-    /**
-     * Retorna a URL da API CNC conforme ambiente
-     */
     public function getUrlCNC(): string
     {
-        return $this->ambiente === self::AMBIENTE_PRODUCAO
-            ? self::URL_PRODUCAO_CNC
-            : self::URL_HOMOLOGACAO_CNC;
+        return $this->porAmbiente(self::URL_PRODUCAO_CNC, self::URL_HOMOLOGACAO_CNC);
     }
 
-    /**
-     * Retorna a URL base para download de PDF (DANFSe) conforme ambiente
-     */
     public function getUrlPDF(): string
     {
-        return $this->ambiente === self::AMBIENTE_PRODUCAO
-            ? self::URL_PRODUCAO_PDF
-            : self::URL_HOMOLOGACAO_PDF;
+        return $this->porAmbiente(self::URL_PRODUCAO_PDF, self::URL_HOMOLOGACAO_PDF);
+    }
+
+    private function porAmbiente(string $producao, string $homologacao): string
+    {
+        return $this->ambiente === self::AMBIENTE_PRODUCAO ? $producao : $homologacao;
     }
 
     public function getAmbiente(): int
@@ -115,33 +90,68 @@ class Config
         return $this->codigoMunicipioIBGE;
     }
 
+    public function getUserAgent(): string
+    {
+        return $this->userAgent;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function getDanfseOptions(): array
+    {
+        return $this->danfseOptions;
+    }
+
     public function setAmbiente(int $ambiente): self
     {
         $this->ambiente = $ambiente;
+
         return $this;
     }
 
     public function setCertificadoPfx(string $certificadoPfx): self
     {
         $this->certificadoPfx = $certificadoPfx;
+
         return $this;
     }
 
-    public function setCertificadoSenha(string $certificadoSenha): self
+    public function setCertificadoSenha(#[SensitiveParameter] string $certificadoSenha): self
     {
         $this->certificadoSenha = $certificadoSenha;
+
         return $this;
     }
 
     public function setVersaoAplicativo(string $versaoAplicativo): self
     {
         $this->versaoAplicativo = $versaoAplicativo;
+
         return $this;
     }
 
     public function setCodigoMunicipioIBGE(string $codigoMunicipioIBGE): self
     {
         $this->codigoMunicipioIBGE = $codigoMunicipioIBGE;
+
+        return $this;
+    }
+
+    public function setUserAgent(string $userAgent): self
+    {
+        $this->userAgent = $userAgent;
+
+        return $this;
+    }
+
+    /**
+     * @param array<string, mixed> $danfseOptions
+     */
+    public function setDanfseOptions(array $danfseOptions): self
+    {
+        $this->danfseOptions = $danfseOptions;
+
         return $this;
     }
 }

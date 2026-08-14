@@ -1,107 +1,34 @@
 <?php
 
+declare(strict_types=1);
+
 namespace NFSe\Utils;
 
 use DOMDocument;
-use Exception;
+use DOMElement;
+use NFSe\Certificate\Certificado;
+use NFSe\Exception\AssinaturaException;
 
 /**
- * Classe para assinatura digital de XML conforme padrão XMLDSig
+ * Assinatura digital de XML conforme o padrão XMLDSig (enveloped signature),
+ * com SHA-256 / RSA, como exigido pelo Sistema Nacional de NFS-e.
  */
 class AssinaturaDigital
 {
-    private $certificadoPfx;
-    private $certificadoSenha;
-    private $privateKey;
-    private $publicKey;
+    private const NS_DSIG = 'http://www.w3.org/2000/09/xmldsig#';
+    private const ALGO_C14N = 'http://www.w3.org/2001/10/xml-exc-c14n#WithComments';
+    private const ALGO_ASSINATURA = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
+    private const ALGO_DIGEST = 'http://www.w3.org/2001/04/xmlenc#sha256';
+    private const ALGO_ENVELOPED = 'http://www.w3.org/2000/09/xmldsig#enveloped-signature';
 
-    public function __construct(string $certificadoPfx, string $certificadoSenha)
-    {
-        $this->certificadoPfx = $certificadoPfx;
-        $this->certificadoSenha = $certificadoSenha;
-        $this->carregarCertificado();
-    }
+    public function __construct(private readonly Certificado $certificado) {}
 
     /**
-     * Carrega o certificado PFX e extrai as chaves
-     */
-    private function carregarCertificado(): void
-    {
-        if (!file_exists($this->certificadoPfx)) {
-            throw new Exception("Certificado não encontrado: {$this->certificadoPfx}");
-        }
-
-        $pfxContent = file_get_contents($this->certificadoPfx);
-        $certs = [];
-
-        // Tenta carregar o certificado
-        // Alguns certificados antigos usam algoritmos que requerem configuração especial
-        $success = @openssl_pkcs12_read($pfxContent, $certs, $this->certificadoSenha);
-
-        if (!$success) {
-            // Se falhar, pode ser devido ao algoritmo RC2-40-CBC em OpenSSL 3.x
-            // Vamos tentar converter o certificado usando a linha de comando
-            $error = openssl_error_string();
-
-            // Tenta extrair usando método alternativo via arquivo temporário
-            $tempPfx = tempnam(sys_get_temp_dir(), 'pfx_');
-            $tempPem = tempnam(sys_get_temp_dir(), 'pem_');
-
-            file_put_contents($tempPfx, $pfxContent);
-
-            // Converte PFX para PEM usando openssl CLI com provider legacy
-            $cmd = sprintf(
-                'openssl pkcs12 -in %s -out %s -nodes -passin pass:%s -provider legacy -provider default 2>&1',
-                escapeshellarg($tempPfx),
-                escapeshellarg($tempPem),
-                escapeshellarg($this->certificadoSenha)
-            );
-
-            exec($cmd, $output, $returnCode);
-
-            if ($returnCode === 0 && file_exists($tempPem)) {
-                // Lê o PEM gerado
-                $pemContent = file_get_contents($tempPem);
-
-                // Extrai chave privada
-                if (preg_match('/-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----/s', $pemContent, $matches)) {
-                    $this->privateKey = $matches[0];
-                } elseif (preg_match('/-----BEGIN RSA PRIVATE KEY-----.*?-----END RSA PRIVATE KEY-----/s', $pemContent, $matches)) {
-                    $this->privateKey = $matches[0];
-                }
-
-                // Extrai certificado público
-                if (preg_match('/-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----/s', $pemContent, $matches)) {
-                    $this->publicKey = $matches[0];
-                }
-
-                // Limpa arquivos temporários
-                @unlink($tempPfx);
-                @unlink($tempPem);
-
-                if (!$this->privateKey || !$this->publicKey) {
-                    throw new Exception("Erro ao extrair chaves do certificado PEM convertido.");
-                }
-            } else {
-                // Limpa arquivos temporários
-                @unlink($tempPfx);
-                @unlink($tempPem);
-
-                throw new Exception("Erro ao ler certificado PFX. Verifique a senha. Detalhes: " . implode("\n", $output));
-            }
-        } else {
-            $this->privateKey = $certs['pkey'];
-            $this->publicKey = $certs['cert'];
-        }
-    }
-
-    /**
-     * Assina o XML conforme padrão XMLDSig (enveloped signature)
+     * Assina o XML (enveloped signature sobre o elemento indicado).
      *
      * @param string $xml XML a ser assinado
-     * @param string $tagAssinatura Tag que será assinada (ex: 'infDPS')
-     * @param string $atributoId Nome do atributo ID (ex: 'Id')
-     * @return string XML assinado
+     * @param string $tagAssinatura Tag cujo conteúdo será assinado (ex.: 'infDPS')
+     * @param string $atributoId Nome do atributo de identificação (ex.: 'Id')
      */
     public function assinarXML(string $xml, string $tagAssinatura = 'infDPS', string $atributoId = 'Id'): string
     {
@@ -110,170 +37,211 @@ class AssinaturaDigital
         $dom->formatOutput = false;
         $dom->loadXML($xml);
 
-        // Localiza o elemento a ser assinado
         $node = $dom->getElementsByTagName($tagAssinatura)->item(0);
-        if (!$node) {
-            throw new Exception("Tag '{$tagAssinatura}' não encontrada no XML");
+        if ($node === null) {
+            throw new AssinaturaException("Tag '{$tagAssinatura}' não encontrada no XML");
         }
 
         $idValue = $node->getAttribute($atributoId);
-        if (!$idValue) {
-            throw new Exception("Atributo '{$atributoId}' não encontrado na tag '{$tagAssinatura}'");
+        if ($idValue === '') {
+            throw new AssinaturaException("Atributo '{$atributoId}' não encontrado na tag '{$tagAssinatura}'");
         }
 
-        // Canonicaliza o elemento
         $canonicalData = $node->C14N(false, false);
-
-        // Calcula o hash SHA-256
         $digestValue = base64_encode(hash('sha256', $canonicalData, true));
 
-        // Cria o SignedInfo
         $signedInfo = $this->criarSignedInfo($idValue, $digestValue);
 
-        // Importa o SignedInfo para um documento temporário para canonicalização
+        // Canonicaliza o SignedInfo num documento próprio, como será verificado
         $tempDom = new DOMDocument('1.0', 'UTF-8');
         $tempDom->formatOutput = false;
         $importedSignedInfo = $tempDom->importNode($signedInfo, true);
         $tempDom->appendChild($importedSignedInfo);
-
-        // Canonicaliza o SignedInfo usando exclusive canonicalization with comments
         $signedInfoCanonical = $importedSignedInfo->C14N(true, true);
 
-        // Assina o SignedInfo com SHA-256
-        // Garante que a chave privada está no formato correto
-        $keyResource = openssl_pkey_get_private($this->privateKey);
+        $keyResource = openssl_pkey_get_private($this->certificado->getKeyPem());
         if ($keyResource === false) {
-            throw new Exception("Erro ao carregar chave privada para assinatura: " . openssl_error_string());
+            throw new AssinaturaException('Erro ao carregar chave privada para assinatura: ' . openssl_error_string());
         }
 
-        $success = openssl_sign($signedInfoCanonical, $signature, $keyResource, OPENSSL_ALGO_SHA256);
-        if (!$success) {
-            throw new Exception("Erro ao assinar XML: " . openssl_error_string());
+        if (!openssl_sign($signedInfoCanonical, $signature, $keyResource, OPENSSL_ALGO_SHA256)) {
+            throw new AssinaturaException('Erro ao assinar XML: ' . openssl_error_string());
         }
 
-        $signatureValue = base64_encode($signature);
+        $signatureNode = $this->criarSignature($dom, $signedInfo, base64_encode($signature), $this->getCertificadoBase64());
 
-        // Obtém o certificado em base64
-        $certData = $this->getCertificadoBase64();
+        $node->parentNode?->appendChild($signatureNode);
 
-        // Cria o elemento Signature
-        $signatureNode = $this->criarSignature($dom, $signedInfo, $signatureValue, $certData);
-
-        // Localiza onde inserir a assinatura (após o elemento assinado)
-        $parentNode = $node->parentNode;
-        $parentNode->appendChild($signatureNode);
-
-        return $dom->saveXML();
+        return (string) $dom->saveXML();
     }
 
     /**
-     * Cria o elemento SignedInfo
+     * Valida a assinatura XMLDSig de um XML: recomputa o digest do elemento
+     * referenciado e verifica o SignatureValue contra o certificado embutido
+     * no próprio XML (KeyInfo/X509Certificate).
+     *
+     * Não valida a cadeia de confiança do certificado — apenas a integridade
+     * criptográfica da assinatura.
      */
-    private function criarSignedInfo(string $uri, string $digestValue): \DOMElement
+    public function validarAssinatura(string $xml): bool
+    {
+        return self::verificarAssinatura($xml);
+    }
+
+    /**
+     * Versão estática de validarAssinatura — não requer certificado próprio,
+     * pois a verificação usa o certificado embutido no XML.
+     */
+    public static function verificarAssinatura(string $xml): bool
+    {
+        $dom = new DOMDocument('1.0', 'UTF-8');
+        $dom->preserveWhiteSpace = false;
+        if (!@$dom->loadXML($xml)) {
+            return false;
+        }
+
+        $signature = $dom->getElementsByTagNameNS(self::NS_DSIG, 'Signature')->item(0);
+        if ($signature === null) {
+            return false;
+        }
+
+        $signedInfo = $dom->getElementsByTagNameNS(self::NS_DSIG, 'SignedInfo')->item(0);
+        $signatureValueNode = $dom->getElementsByTagNameNS(self::NS_DSIG, 'SignatureValue')->item(0);
+        $certNode = $dom->getElementsByTagNameNS(self::NS_DSIG, 'X509Certificate')->item(0);
+        $referenceNode = $dom->getElementsByTagNameNS(self::NS_DSIG, 'Reference')->item(0);
+        $digestValueNode = $dom->getElementsByTagNameNS(self::NS_DSIG, 'DigestValue')->item(0);
+
+        if (
+            $signedInfo === null || $signatureValueNode === null || $certNode === null
+            || $referenceNode === null || $digestValueNode === null
+        ) {
+            return false;
+        }
+
+        // 1. Localiza o elemento referenciado pela URI (#Id)
+        $uri = ltrim($referenceNode->getAttribute('URI'), '#');
+        $alvo = self::localizarElementoPorId($dom, $uri);
+        if ($alvo === null) {
+            return false;
+        }
+
+        // 2. Recomputa o digest. A transformação enveloped-signature exige
+        //    canonicalizar o alvo sem a Signature; quando a Signature é irmã
+        //    do alvo (caso desta biblioteca), remover não altera o alvo, mas
+        //    remove-se mesmo assim para o caso geral de assinatura aninhada.
+        $clone = new DOMDocument('1.0', 'UTF-8');
+        $clone->preserveWhiteSpace = false;
+        $clone->loadXML($dom->saveXML() ?: '');
+        $cloneSignature = $clone->getElementsByTagNameNS(self::NS_DSIG, 'Signature')->item(0);
+        $cloneSignature?->parentNode?->removeChild($cloneSignature);
+        $cloneAlvo = self::localizarElementoPorId($clone, $uri);
+        if ($cloneAlvo === null) {
+            return false;
+        }
+
+        $digestRecomputado = base64_encode(hash('sha256', $cloneAlvo->C14N(false, false), true));
+        $digestDeclarado = trim($digestValueNode->textContent);
+        if (!hash_equals($digestRecomputado, $digestDeclarado)) {
+            return false;
+        }
+
+        // 3. Verifica o SignatureValue sobre o SignedInfo canonicalizado
+        $assinatura = base64_decode(trim($signatureValueNode->textContent), true);
+        if ($assinatura === false) {
+            return false;
+        }
+
+        $certPem = "-----BEGIN CERTIFICATE-----\n"
+            . chunk_split(trim($certNode->textContent), 64, "\n")
+            . "-----END CERTIFICATE-----\n";
+        $chavePublica = openssl_pkey_get_public($certPem);
+        if ($chavePublica === false) {
+            return false;
+        }
+
+        $canonicalSignedInfo = $signedInfo->C14N(true, true);
+
+        return openssl_verify($canonicalSignedInfo, $assinatura, $chavePublica, OPENSSL_ALGO_SHA256) === 1;
+    }
+
+    private static function localizarElementoPorId(DOMDocument $dom, string $id): ?DOMElement
+    {
+        $xpath = new \DOMXPath($dom);
+        $lista = $xpath->query("//*[@Id='{$id}']");
+        $node = $lista === false ? null : $lista->item(0);
+
+        return $node instanceof DOMElement ? $node : null;
+    }
+
+    private function criarSignedInfo(string $uri, string $digestValue): DOMElement
     {
         $dom = new DOMDocument('1.0', 'UTF-8');
         $dom->formatOutput = false;
 
-        $signedInfo = $dom->createElementNS('http://www.w3.org/2000/09/xmldsig#', 'SignedInfo');
+        $signedInfo = $dom->createElementNS(self::NS_DSIG, 'SignedInfo');
 
-        // CanonicalizationMethod - Exclusive Canonicalization with comments
         $canonicalizationMethod = $dom->createElement('CanonicalizationMethod');
-        $canonicalizationMethod->setAttribute('Algorithm', 'http://www.w3.org/2001/10/xml-exc-c14n#WithComments');
+        $canonicalizationMethod->setAttribute('Algorithm', self::ALGO_C14N);
         $signedInfo->appendChild($canonicalizationMethod);
 
-        // SignatureMethod - RSA-SHA256
         $signatureMethod = $dom->createElement('SignatureMethod');
-        $signatureMethod->setAttribute('Algorithm', 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256');
+        $signatureMethod->setAttribute('Algorithm', self::ALGO_ASSINATURA);
         $signedInfo->appendChild($signatureMethod);
 
-        // Reference
         $reference = $dom->createElement('Reference');
         $reference->setAttribute('URI', '#' . $uri);
 
-        // Transforms
         $transforms = $dom->createElement('Transforms');
 
         $transform1 = $dom->createElement('Transform');
-        $transform1->setAttribute('Algorithm', 'http://www.w3.org/2000/09/xmldsig#enveloped-signature');
+        $transform1->setAttribute('Algorithm', self::ALGO_ENVELOPED);
         $transforms->appendChild($transform1);
 
         $transform2 = $dom->createElement('Transform');
-        $transform2->setAttribute('Algorithm', 'http://www.w3.org/2001/10/xml-exc-c14n#WithComments');
+        $transform2->setAttribute('Algorithm', self::ALGO_C14N);
         $transforms->appendChild($transform2);
 
         $reference->appendChild($transforms);
 
-        // DigestMethod - SHA256
         $digestMethod = $dom->createElement('DigestMethod');
-        $digestMethod->setAttribute('Algorithm', 'http://www.w3.org/2001/04/xmlenc#sha256');
+        $digestMethod->setAttribute('Algorithm', self::ALGO_DIGEST);
         $reference->appendChild($digestMethod);
 
-        // DigestValue
-        $digestValueNode = $dom->createElement('DigestValue', $digestValue);
-        $reference->appendChild($digestValueNode);
+        $reference->appendChild($dom->createElement('DigestValue', $digestValue));
 
         $signedInfo->appendChild($reference);
 
         return $signedInfo;
     }
 
-    /**
-     * Cria o elemento Signature completo
-     */
     private function criarSignature(
         DOMDocument $dom,
-        \DOMElement $signedInfo,
+        DOMElement $signedInfo,
         string $signatureValue,
-        string $certData
-    ): \DOMElement {
-        $signature = $dom->createElementNS('http://www.w3.org/2000/09/xmldsig#', 'Signature');
+        string $certData,
+    ): DOMElement {
+        $signature = $dom->createElementNS(self::NS_DSIG, 'Signature');
 
-        // Importa SignedInfo
         $importedSignedInfo = $dom->importNode($signedInfo, true);
         $signature->appendChild($importedSignedInfo);
 
-        // SignatureValue
-        $signatureValueNode = $dom->createElement('SignatureValue', $signatureValue);
-        $signature->appendChild($signatureValueNode);
+        $signature->appendChild($dom->createElement('SignatureValue', $signatureValue));
 
-        // KeyInfo
         $keyInfo = $dom->createElement('KeyInfo');
         $x509Data = $dom->createElement('X509Data');
-        $x509Certificate = $dom->createElement('X509Certificate', $certData);
-        $x509Data->appendChild($x509Certificate);
+        $x509Data->appendChild($dom->createElement('X509Certificate', $certData));
         $keyInfo->appendChild($x509Data);
         $signature->appendChild($keyInfo);
 
         return $signature;
     }
 
-    /**
-     * Obtém o certificado em formato Base64 (sem cabeçalhos)
-     */
     private function getCertificadoBase64(): string
     {
-        $certData = $this->publicKey;
-        $certData = str_replace('-----BEGIN CERTIFICATE-----', '', $certData);
-        $certData = str_replace('-----END CERTIFICATE-----', '', $certData);
-        $certData = str_replace(["\r", "\n", " "], '', $certData);
-        return $certData;
-    }
-
-    /**
-     * Valida se um XML está assinado corretamente
-     */
-    public function validarAssinatura(string $xml): bool
-    {
-        $dom = new DOMDocument('1.0', 'UTF-8');
-        $dom->preserveWhiteSpace = false;
-        $dom->loadXML($xml);
-
-        $signature = $dom->getElementsByTagNameNS('http://www.w3.org/2000/09/xmldsig#', 'Signature')->item(0);
-        if (!$signature) {
-            return false;
-        }
-
-        // Implementar validação completa se necessário
-        return true;
+        return str_replace(
+            ['-----BEGIN CERTIFICATE-----', '-----END CERTIFICATE-----', "\r", "\n", ' '],
+            '',
+            $this->certificado->getCertPem(),
+        );
     }
 }
