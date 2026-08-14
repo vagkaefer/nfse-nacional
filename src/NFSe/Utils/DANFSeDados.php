@@ -18,6 +18,16 @@ final class DANFSeDados
 {
     public const TRACO = '-';
 
+    // UF pelos dois primeiros dígitos do código IBGE do município.
+    private const UF_POR_CODIGO = [
+        '11' => 'RO', '12' => 'AC', '13' => 'AM', '14' => 'RR', '15' => 'PA',
+        '16' => 'AP', '17' => 'TO', '21' => 'MA', '22' => 'PI', '23' => 'CE',
+        '24' => 'RN', '25' => 'PB', '26' => 'PE', '27' => 'AL', '28' => 'SE',
+        '29' => 'BA', '31' => 'MG', '32' => 'ES', '33' => 'RJ', '35' => 'SP',
+        '41' => 'PR', '42' => 'SC', '43' => 'RS', '50' => 'MS', '51' => 'MT',
+        '52' => 'GO', '53' => 'DF',
+    ];
+
     /**
      * @param array<string, string> $municipios Mapa opcional codIBGE => "Nome - UF"
      * @return array<string, mixed>
@@ -45,8 +55,9 @@ final class DANFSeDados
         $dados['issqn'] = self::issqn($infNFSe, $dps, $municipios);
         $dados['federal'] = self::federal($dps);
         $dados['ibscbs'] = self::ibsCbs($infNFSe, $dps, $municipios);
-        $dados['valores'] = self::valores($infNFSe, $dps, $dados['ibscbs']);
+        $dados['valores'] = self::valores($infNFSe, $dps);
         $dados['informacoesComplementares'] = self::informacoesComplementares($infNFSe, $dps);
+        $dados['linhaTotaisAproximados'] = self::totaisAproximados($dps);
 
         return $dados;
     }
@@ -57,6 +68,13 @@ final class DANFSeDados
     private static function identificacao(SimpleXMLElement $infNFSe, SimpleXMLElement $dps): array
     {
         $tpAmb = self::texto($dps->tpAmb);
+
+        // Cabeçalho: "Município: CCCC / CC" (NT 008, item 2.4.5, campo Município)
+        $municipioEmissor = self::texto($infNFSe->xLocEmi);
+        $ufEmissor = self::texto($infNFSe->emit->enderNac->UF ?? null);
+        $municipioEmissorComUf = $ufEmissor !== self::TRACO
+            ? $municipioEmissor . ' / ' . $ufEmissor
+            : $municipioEmissor;
 
         return [
             'chaveAcesso' => str_replace('NFS', '', (string) $infNFSe['Id']),
@@ -71,7 +89,8 @@ final class DANFSeDados
             'emitente' => self::descreverEmitente(self::texto($dps->tpEmit)),
             'situacao' => self::descreverSituacao(self::texto($infNFSe->cStat)),
             'finalidade' => self::descreverFinalidade(self::texto($dps->IBSCBS->finNFSe ?? null)),
-            'municipioEmissor' => self::texto($infNFSe->xLocEmi),
+            'municipioEmissor' => $municipioEmissor,
+            'municipioEmissorComUf' => $municipioEmissorComUf,
         ];
     }
 
@@ -85,6 +104,17 @@ final class DANFSeDados
         array $municipios,
     ): array {
         $dados = self::pessoaBase($emit, $municipios, $emit->enderNac ?? null);
+
+        // Telefone e e-mail vêm de DPS/infDPS/prest (caminho do item 2.4.5 da
+        // NT 008 — é o que o portal nacional imprime), com fallback para emit.
+        $fone = self::texto($prest->fone ?? null);
+        if ($fone === self::TRACO) {
+            $fone = self::texto($emit->fone);
+        }
+        $dados['telefone'] = self::formatarTelefone($fone === self::TRACO ? '' : $fone);
+
+        $email = self::texto($prest->email ?? null);
+        $dados['email'] = $email !== self::TRACO ? $email : self::texto($emit->email);
 
         $dados['simplesNacional'] = self::descreverSimplesNacional(
             self::texto($prest->regTrib->opSimpNac ?? null),
@@ -176,18 +206,20 @@ final class DANFSeDados
         $codigoNacional = self::formatarCodigoTrib(self::texto($serv->cServ->cTribNac ?? null));
         $codigoMunicipal = self::texto($serv->cServ->cTribMun ?? null);
 
+        $codigoLocal = self::texto($serv->locPrest->cLocPrestacao ?? null);
         $local = self::texto($infNFSe->xLocPrestacao);
         if ($local === self::TRACO) {
-            $local = self::nomeMunicipio(
-                self::texto($serv->locPrest->cLocPrestacao ?? null),
-                $municipios,
-            );
+            $local = self::nomeMunicipio($codigoLocal, $municipios);
         }
 
         return [
             'codigoTributacao' => $codigoNacional . ' / ' . $codigoMunicipal,
             'codigoNBS' => self::texto($serv->cServ->cNBS ?? null),
-            'localPrestacao' => self::comUf($local, self::texto($serv->locPrest->cPaisPrestacao ?? null)),
+            'localPrestacao' => self::localComUfEPais(
+                $local,
+                $codigoLocal,
+                self::texto($serv->locPrest->cPaisPrestacao ?? null),
+            ),
             'descricaoCodigo' => self::texto($infNFSe->xTribNac),
             'descricao' => self::texto($serv->cServ->xDescServ ?? null),
         ];
@@ -214,21 +246,40 @@ final class DANFSeDados
             $municipioIncidencia = self::texto($infNFSe->xLocIncid);
         }
 
+        $regimeEspecial = self::texto($dps->prest->regTrib->regEspTrib ?? null);
+        $tipoImunidade = self::texto($tribMun->tpImunidade ?? null);
+        $suspensao = self::texto($tribMun->exigSusp->tpSusp ?? null);
+        $numeroProcesso = self::texto($tribMun->exigSusp->nProcesso ?? null);
+        $beneficio = self::texto($tribMun->BM->nBM ?? null);
+        $calculoBM = self::valorOuTraco($valores->vCalcBM ?? null);
+        $totalDeducoes = self::valorOuTraco($valores->vCalcDR ?? null);
+        $descontoIncond = self::valorOuTraco($dps->valores->vDescCondIncond->vDescIncond ?? null);
+
+        // Nota 5 da NT 008: as linhas opcionais do bloco ISSQN podem ser
+        // suprimidas quando todos os campos da linha estão sem dados no XML.
+        // regEspTrib = 0 ("Nenhum") conta como sem dados, como faz o portal.
+        $semDado = static fn(string $v): bool => $v === self::TRACO || $v === '0';
+
         return [
             'tributacao' => self::descreverTributacaoISSQN($tributacao),
             'sujeitoAoIssqn' => $tributacao !== '5',
-            'municipioIncidencia' => self::comUf(
+            'municipioIncidencia' => self::localComUfEPais(
                 $municipioIncidencia,
+                self::texto($infNFSe->cLocIncid),
                 self::texto($tribMun->cPaisResult ?? null),
             ),
-            'regimeEspecial' => self::texto($dps->prest->regTrib->regEspTrib ?? null),
-            'tipoImunidade' => self::texto($tribMun->tpImunidade ?? null),
-            'suspensaoExigibilidade' => self::texto($tribMun->exigSusp->tpSusp ?? null),
-            'numeroProcessoSuspensao' => self::texto($tribMun->exigSusp->nProcesso ?? null),
-            'beneficioMunicipal' => self::texto($tribMun->BM->nBM ?? null),
-            'calculoBM' => self::valorOuTraco($valores->vCalcBM ?? null),
-            'totalDeducoes' => self::valorOuTraco($valores->vCalcDR ?? null),
-            'descontoIncondicionado' => self::valorOuTraco($dps->valores->vDescCondIncond->vDescIncond ?? null),
+            'regimeEspecial' => self::descreverRegimeEspecial($regimeEspecial),
+            'tipoImunidade' => $tipoImunidade,
+            'suspensaoExigibilidade' => $suspensao,
+            'numeroProcessoSuspensao' => $numeroProcesso,
+            'beneficioMunicipal' => $beneficio,
+            'calculoBM' => $calculoBM,
+            'totalDeducoes' => $totalDeducoes,
+            'descontoIncondicionado' => $descontoIncond,
+            'linhaRegimeVazia' => $semDado($regimeEspecial) && $semDado($tipoImunidade)
+                && $semDado($suspensao) && $semDado($numeroProcesso),
+            'linhaBeneficioVazia' => $semDado($beneficio) && $semDado($calculoBM)
+                && $semDado($totalDeducoes) && $semDado($descontoIncond),
             'baseCalculo' => self::valorOuTraco($valores->vBC ?? null),
             'aliquota' => self::percentualOuTraco($valores->pAliqAplic ?? null),
             'retencao' => self::descreverRetencaoISSQN(self::texto($tribMun->tpRetISSQN ?? null)),
@@ -340,35 +391,29 @@ final class DANFSeDados
     }
 
     /**
-     * @param array<string, mixed> $ibsCbs
      * @return array<string, mixed>
      */
     private static function valores(
         SimpleXMLElement $infNFSe,
         SimpleXMLElement $dps,
-        array $ibsCbs,
     ): array {
         $valoresNFSe = $infNFSe->valores ?? null;
         $descontos = $dps->valores->vDescCondIncond ?? null;
-
-        $liquido = (float) ($valoresNFSe->vLiq ?? 0);
-        $totalIbsCbs = (float) ($infNFSe->IBSCBS->totCIBS->gIBS->vIBSTot ?? 0)
-            + (float) ($infNFSe->IBSCBS->totCIBS->gCBS->vCBS ?? 0);
-
-        // vTotNF já vem calculado pela Sefin; na ausência do grupo IBSCBS,
-        // o total é o próprio líquido.
-        $totalComIbsCbs = isset($infNFSe->IBSCBS->totCIBS->vTotNF)
-            ? (float) $infNFSe->IBSCBS->totCIBS->vTotNF
-            : $liquido + $totalIbsCbs;
+        $totais = $infNFSe->IBSCBS->totCIBS ?? null;
 
         return [
-            'valorServico' => (float) ($dps->valores->vServPrest->vServ ?? 0),
+            'valorServico' => self::valorOuTraco($dps->valores->vServPrest->vServ ?? null),
             'descontoIncondicionado' => self::valorOuTraco($descontos->vDescIncond ?? null),
             'descontoCondicionado' => self::valorOuTraco($descontos->vDescCond ?? null),
             'totalRetencoes' => self::valorOuTraco($valoresNFSe->vTotalRet ?? null),
-            'valorLiquido' => $liquido,
-            'totalIbsCbs' => $totalIbsCbs,
-            'valorLiquidoComIbsCbs' => $totalComIbsCbs,
+            'valorLiquido' => self::valorOuTraco($valoresNFSe->vLiq ?? null),
+            'totalIbsCbs' => self::somarOuTraco(
+                $totais->gIBS->vIBSTot ?? null,
+                $totais->gCBS->vCBS ?? null,
+            ),
+            // vTotNF vem calculado pela Sefin; ausente no XML, imprime traço
+            // (NT 008, nota 12) — sem fallback aritmético.
+            'valorLiquidoComIbsCbs' => self::valorOuTraco($totais->vTotNF ?? null),
             'tribISSQN' => self::texto($dps->valores->trib->tribMun->tribISSQN ?? null),
             'retencaoISSQN' => self::texto($dps->valores->trib->tribMun->tpRetISSQN ?? null),
             'totTribSN' => (float) ($dps->valores->trib->totTrib->pTotTribSN ?? 0),
@@ -409,28 +454,28 @@ final class DANFSeDados
             $partes[] = 'Inf. A. T. Mun.: ' . $usoMunicipal;
         }
 
-        $partes[] = self::totaisAproximados($dps);
-
         return $partes;
     }
 
     /**
-     * Linha obrigatória e fixa da Lei nº 12.741/2012 (nota 10 da NT 008).
+     * Linha obrigatória e fixa da Lei nº 12.741/2012 (nota 10 da NT 008),
+     * impressa em linha própria após as demais informações complementares.
+     * Aceita valores monetários (vTotTrib) ou percentuais (pTotTrib); o
+     * pTotTribSN não alimenta esses campos — sem eles, imprime traços.
      */
     private static function totaisAproximados(SimpleXMLElement $dps): string
     {
         $totTrib = $dps->valores->trib->totTrib ?? null;
 
-        if (isset($totTrib->pTotTribSN)) {
-            $percentual = self::formatarPercentual((float) $totTrib->pTotTribSN);
-
-            return 'Totais Aproximados dos Tributos cfe. Lei nº 12.741/2012: '
-                . "Federais: {$percentual}; Estaduais: {$percentual}; Municipais: {$percentual};";
+        if (isset($totTrib->pTotTrib)) {
+            $federais = self::percentualOuTraco($totTrib->pTotTrib->pTotTribFed ?? null);
+            $estaduais = self::percentualOuTraco($totTrib->pTotTrib->pTotTribEst ?? null);
+            $municipais = self::percentualOuTraco($totTrib->pTotTrib->pTotTribMun ?? null);
+        } else {
+            $federais = self::valorOuTraco($totTrib->vTotTrib->vTotTribFed ?? null);
+            $estaduais = self::valorOuTraco($totTrib->vTotTrib->vTotTribEst ?? null);
+            $municipais = self::valorOuTraco($totTrib->vTotTrib->vTotTribMun ?? null);
         }
-
-        $federais = self::valorOuTraco($totTrib->vTotTrib->vTotTribFed ?? null);
-        $estaduais = self::valorOuTraco($totTrib->vTotTrib->vTotTribEst ?? null);
-        $municipais = self::valorOuTraco($totTrib->vTotTrib->vTotTribMun ?? null);
 
         return 'Totais Aproximados dos Tributos cfe. Lei nº 12.741/2012: '
             . "Federais: {$federais}; Estaduais: {$estaduais}; Municipais: {$municipais};";
@@ -490,13 +535,23 @@ final class DANFSeDados
         return $municipios[$codigo] ?? $codigo;
     }
 
-    private static function comUf(string $local, string $pais): string
+    /**
+     * "Município / UF / País" (NT 008, item 2.4.5). A UF vem dos dois
+     * primeiros dígitos do código IBGE; se o nome já traz a UF (mapa de
+     * municípios no formato "Nome / UF"), não duplica. País ausente => traço.
+     */
+    private static function localComUfEPais(string $local, string $codigoIbge, string $pais): string
     {
-        if ($pais === self::TRACO) {
-            return $local . ' / ' . self::TRACO;
+        if ($local !== self::TRACO && !str_contains($local, ' / ')) {
+            $local .= ' / ' . self::ufPorCodigoIbge($codigoIbge);
         }
 
-        return $local . ' / ' . $pais;
+        return $local . ' / ' . ($pais === '' ? self::TRACO : $pais);
+    }
+
+    private static function ufPorCodigoIbge(string $codigoIbge): string
+    {
+        return self::UF_POR_CODIGO[substr($codigoIbge, 0, 2)] ?? self::TRACO;
     }
 
     /**
@@ -605,11 +660,14 @@ final class DANFSeDados
         return $dt !== false ? $dt->format('d/m/Y H:i:s') : $dataHora;
     }
 
+    /**
+     * Máscara "nn.nnn-nnn" do item 2.4.5 da NT 008 (campo Código IBGE / CEP).
+     */
     public static function formatarCep(string $cep): string
     {
         $cep = (string) preg_replace('/\D/', '', $cep);
         if (strlen($cep) === 8) {
-            return (string) preg_replace('/(\d{5})(\d{3})/', '$1-$2', $cep);
+            return (string) preg_replace('/(\d{2})(\d{3})(\d{3})/', '$1.$2-$3', $cep);
         }
 
         return $cep !== '' ? $cep : self::TRACO;
@@ -682,6 +740,20 @@ final class DANFSeDados
             '2' => 'CBS apurada pelo SN e IBS apurado pelo regime regular',
             '3' => 'IBS e CBS apurados pelo regime regular',
             default => self::TRACO,
+        };
+    }
+
+    private static function descreverRegimeEspecial(string $codigo): string
+    {
+        return match ($codigo) {
+            '0' => 'Nenhum',
+            '1' => 'Ato Cooperado (Cooperativa)',
+            '2' => 'Estimativa',
+            '3' => 'Microempresa Municipal',
+            '4' => 'Notário ou Registrador',
+            '5' => 'Profissional Autônomo',
+            '6' => 'Sociedade de Profissionais',
+            default => $codigo,
         };
     }
 
