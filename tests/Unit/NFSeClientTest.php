@@ -117,39 +117,69 @@ final class NFSeClientTest extends TestCase
         $this->assertTrue(AssinaturaDigital::verificarAssinatura($xmlEvento), 'infPedReg deve estar assinado');
     }
 
-    public function testBaixarPdfRetornaPdfOficialQuandoDisponivel(): void
+    /**
+     * A API oficial do DANFSe está sobrestada desde 03/08/2026 (NT 008): o PDF
+     * passa a ser gerado localmente sem sequer consultar o endpoint.
+     */
+    public function testBaixarPdfGeraLocalmenteSemConsultarEndpointOficial(): void
     {
-        $http = (new StubHttpClient())->enfileirar(new HttpResponse(200, '%PDF-1.4 conteudo oficial'));
-        $cliente = $this->criarCliente($http);
-
-        $pdf = $cliente->baixarPDF(self::CHAVE);
-
-        $this->assertSame('%PDF-1.4 conteudo oficial', $pdf);
-        $this->assertSame(Config::URL_HOMOLOGACAO_PDF . '/' . self::CHAVE, $http->requisicoes[0]['url']);
-    }
-
-    public function testBaixarPdfUsaFallbackLocalQuandoOficialFalha(): void
-    {
-        $xmlNFSe = (string) file_get_contents(__DIR__ . '/../Fixtures/nfse-exemplo.xml');
-        $consultaBody = (string) json_encode([
-            'nfseXmlGZipB64' => base64_encode((string) gzencode($xmlNFSe)),
-        ]);
-
         $http = (new StubHttpClient())->comResolvedor(
-            function (string $method, string $url) use ($consultaBody): HttpResponse {
-                if (str_contains($url, '/danfse/')) {
-                    return new HttpResponse(429, 'rate limited');
-                }
-
-                return new HttpResponse(200, $consultaBody);
-            },
+            fn(string $method, string $url): HttpResponse => new HttpResponse(200, $this->consultaBody()),
         );
         $cliente = $this->criarCliente($http);
 
         $pdf = $cliente->baixarPDF(self::CHAVE);
 
-        $this->assertStringStartsWith('%PDF', $pdf, 'Fallback local deve gerar um PDF válido');
+        $this->assertStringStartsWith('%PDF', $pdf);
         $this->assertGreaterThan(1000, strlen($pdf));
+
+        foreach ($http->requisicoes as $requisicao) {
+            $this->assertStringNotContainsString('/danfse/', (string) $requisicao['url']);
+        }
+    }
+
+    public function testBaixarPdfRetornaPdfOficialQuandoSolicitadoEDisponivel(): void
+    {
+        $http = (new StubHttpClient())->enfileirar(new HttpResponse(200, '%PDF-1.4 conteudo oficial'));
+        $cliente = $this->criarCliente($http);
+
+        $pdf = $cliente->baixarPDF(self::CHAVE, tentarOficial: true);
+
+        $this->assertSame('%PDF-1.4 conteudo oficial', $pdf);
+        $this->assertSame(Config::URL_HOMOLOGACAO_PDF . '/' . self::CHAVE, $http->requisicoes[0]['url']);
+        $this->assertNull($cliente->getMotivoUltimoFallback());
+    }
+
+    public function testBaixarPdfUsaGeracaoLocalQuandoOficialFalha(): void
+    {
+        $http = (new StubHttpClient())->comResolvedor(
+            function (string $method, string $url): HttpResponse {
+                if (str_contains($url, '/danfse/')) {
+                    return new HttpResponse(503, 'servico indisponivel');
+                }
+
+                return new HttpResponse(200, $this->consultaBody());
+            },
+        );
+        $cliente = $this->criarCliente($http);
+
+        $pdf = $cliente->baixarPDF(self::CHAVE, tentarOficial: true);
+
+        $this->assertStringStartsWith('%PDF', $pdf, 'Geração local deve produzir um PDF válido');
+        $this->assertGreaterThan(1000, strlen($pdf));
+        $this->assertNotNull(
+            $cliente->getMotivoUltimoFallback(),
+            'O motivo do fallback deve ficar registrado para diagnóstico',
+        );
+    }
+
+    private function consultaBody(): string
+    {
+        $xmlNFSe = (string) file_get_contents(__DIR__ . '/../Fixtures/nfse-exemplo.xml');
+
+        return (string) json_encode([
+            'nfseXmlGZipB64' => base64_encode((string) gzencode($xmlNFSe)),
+        ]);
     }
 
     public function testBaixarXmlDecodificaESalvaArquivo(): void

@@ -207,4 +207,187 @@ final class DPSTest extends TestCase
         $this->assertSame('3.00', $xpath->evaluate('string(//n:DPS/n:infDPS/n:valores/n:trib/n:totTrib/n:vTotTrib/n:vTotTribMun)'));
         $this->assertSame(0.0, $xpath->evaluate('count(//n:DPS/n:infDPS/n:valores/n:trib/n:totTrib/n:pTotTribSN)'));
     }
+
+    // ------------------------------------------------- Reforma Tributária
+
+    /**
+     * Sem setIbsCbs(), o documento permanece no leiaute 1.00 e o XML não muda —
+     * garantia de que a reforma não afeta quem ainda não a informa.
+     */
+    public function testSemIbsCbsMantemLeiaute100(): void
+    {
+        $dps = $this->criarDpsCompleta();
+
+        $this->assertSame(DPS::LEIAUTE_V1_00, $dps->getVersaoLeiaute());
+
+        $dom = new DOMDocument();
+        $dom->loadXML($dps->gerarXML());
+        $xpath = new DOMXPath($dom);
+        $xpath->registerNamespace('n', self::NS);
+
+        $this->assertSame('1.00', $dom->documentElement->getAttribute('versao'));
+        $this->assertSame(0.0, $xpath->evaluate('count(//n:DPS/n:infDPS/n:IBSCBS)'));
+    }
+
+    public function testIbsCbsPromoveLeiautePara101(): void
+    {
+        $dps = $this->criarDpsComIbsCbs();
+
+        $this->assertSame(DPS::LEIAUTE_V1_01, $dps->getVersaoLeiaute());
+
+        $dom = new DOMDocument();
+        $dom->loadXML($dps->gerarXML());
+
+        $this->assertSame('1.01', $dom->documentElement->getAttribute('versao'));
+    }
+
+    public function testEstruturaDoGrupoIbsCbs(): void
+    {
+        $dom = new DOMDocument();
+        $dom->loadXML($this->criarDpsComIbsCbs()->gerarXML());
+        $xpath = new DOMXPath($dom);
+        $xpath->registerNamespace('n', self::NS);
+
+        $base = '/n:DPS/n:infDPS/n:IBSCBS';
+
+        $this->assertSame('0', $xpath->evaluate("string({$base}/n:finNFSe)"));
+        $this->assertSame('110101', $xpath->evaluate("string({$base}/n:cIndOp)"));
+        $this->assertSame('0', $xpath->evaluate("string({$base}/n:indDest)"));
+        $this->assertSame('000', $xpath->evaluate("string({$base}/n:valores/n:trib/n:gIBSCBS/n:CST)"));
+        $this->assertSame('000001', $xpath->evaluate("string({$base}/n:valores/n:trib/n:gIBSCBS/n:cClassTrib)"));
+
+        // O grupo IBSCBS é o último filho de infDPS (o schema é uma sequence)
+        $this->assertSame(
+            'IBSCBS',
+            $xpath->query('/n:DPS/n:infDPS/*[last()]')->item(0)?->localName,
+        );
+    }
+
+    public function testGrupoDiferimentoEtributacaoRegular(): void
+    {
+        $dps = $this->criarDpsComIbsCbs([
+            'valores' => [
+                'gIBSCBS' => [
+                    'CST' => '200',
+                    'cClassTrib' => '200001',
+                    'gTribRegular' => ['CSTReg' => '000', 'cClassTribReg' => '000001'],
+                    'gDif' => ['pDifUF' => 10.0, 'pDifMun' => 5.5, 'pDifCBS' => 20.0],
+                ],
+            ],
+        ]);
+
+        $dom = new DOMDocument();
+        $dom->loadXML($dps->gerarXML());
+        $xpath = new DOMXPath($dom);
+        $xpath->registerNamespace('n', self::NS);
+
+        $grupo = '/n:DPS/n:infDPS/n:IBSCBS/n:valores/n:trib/n:gIBSCBS';
+
+        $this->assertSame('000', $xpath->evaluate("string({$grupo}/n:gTribRegular/n:CSTReg)"));
+        $this->assertSame('10.00', $xpath->evaluate("string({$grupo}/n:gDif/n:pDifUF)"));
+        $this->assertSame('5.50', $xpath->evaluate("string({$grupo}/n:gDif/n:pDifMun)"));
+        $this->assertSame('20.00', $xpath->evaluate("string({$grupo}/n:gDif/n:pDifCBS)"));
+    }
+
+    /**
+     * Os campos criados pela NT 009 ainda não constam dos XSDs publicados, então
+     * só saem no XML com o leiaute estendido ligado explicitamente.
+     */
+    public function testCamposDaNt009ExigemLeiauteEstendido(): void
+    {
+        $ajuste = ['valores' => ['gIBSCBSAjuste' => ['vIBS' => 10.0, 'vCBS' => 20.0]]];
+
+        $padrao = new DOMDocument();
+        $padrao->loadXML($this->criarDpsComIbsCbs($ajuste)->gerarXML());
+        $xpathPadrao = new DOMXPath($padrao);
+        $xpathPadrao->registerNamespace('n', self::NS);
+        $this->assertSame(0.0, $xpathPadrao->evaluate('count(//n:gIBSCBSAjuste)'));
+
+        $estendido = new DOMDocument();
+        $estendido->loadXML($this->criarDpsComIbsCbs($ajuste)->setLeiauteEstendido(true)->gerarXML());
+        $xpathEstendido = new DOMXPath($estendido);
+        $xpathEstendido->registerNamespace('n', self::NS);
+        $this->assertSame('10.00', $xpathEstendido->evaluate('string(//n:gIBSCBSAjuste/n:vIBS)'));
+        $this->assertSame('20.00', $xpathEstendido->evaluate('string(//n:gIBSCBSAjuste/n:vCBS)'));
+    }
+
+    public function testXmlComIbsCbsValidaContraXsdRtc(): void
+    {
+        $xsd = $this->prepararXsdRtc();
+        if ($xsd === null) {
+            $this->markTestSkipped('XSDs do leiaute RTC não disponíveis em docs/');
+        }
+
+        $dom = new DOMDocument();
+        $dom->loadXML($this->criarDpsComIbsCbs()->gerarXML());
+
+        libxml_use_internal_errors(true);
+        $dom->schemaValidate($xsd);
+        $erros = array_map(
+            static fn(\LibXMLError $e): string => trim($e->message),
+            libxml_get_errors(),
+        );
+        libxml_clear_errors();
+        libxml_use_internal_errors(false);
+
+        $this->assertSame([], array_values($erros), 'DPS com IBSCBS não valida contra o XSD RTC');
+    }
+
+    /**
+     * O TSSerieDPS do XSD RTC usa o pattern "^(?!0{1,5}$)\d{1,5}$", que emprega
+     * lookahead — recurso inexistente em regex de XML Schema. O libxml falha ao
+     * compilar o schema inteiro por causa disso, então a validação roda sobre
+     * uma cópia com esse facet substituído por um equivalente válido.
+     *
+     * @return string|null Caminho do XSD utilizável, ou null se indisponível
+     */
+    private function prepararXsdRtc(): ?string
+    {
+        $origem = __DIR__ . '/../../docs/nfse-esquemas_xsd-rtc-v1-01';
+        if (!is_dir($origem)) {
+            return null;
+        }
+
+        $destino = sys_get_temp_dir() . '/nfse-xsd-rtc-' . md5($origem);
+        if (!is_dir($destino) && !mkdir($destino, 0777, true) && !is_dir($destino)) {
+            return null;
+        }
+
+        foreach ((array) glob($origem . '/*.xsd') as $arquivo) {
+            $conteudo = (string) file_get_contents((string) $arquivo);
+            $conteudo = str_replace('^(?!0{1,5}$)\d{1,5}$', '[0-9]{1,5}', $conteudo);
+            file_put_contents($destino . '/' . basename((string) $arquivo), $conteudo);
+        }
+
+        return $destino . '/DPS_v1.01.xsd';
+    }
+
+    /**
+     * @param array<string, mixed> $ibsCbs Sobrescreve o grupo IBSCBS padrão
+     */
+    private function criarDpsComIbsCbs(array $ibsCbs = []): DPS
+    {
+        $padrao = [
+            'finNFSe' => '0',
+            'cIndOp' => '110101',
+            'indDest' => '0',
+            'valores' => [
+                'gIBSCBS' => [
+                    'CST' => '000',
+                    'cClassTrib' => '000001',
+                ],
+            ],
+        ];
+
+        // No leiaute RTC o código da NBS passou a ser obrigatório em cServ.
+        return $this->criarDpsCompleta()
+            ->setServico([
+                'cLocPrestacao' => '4204202',
+                'cTribNac' => '01.06.01',
+                'xDescServ' => 'Consultoria em tecnologia da informacao',
+                'cNBS' => '115011000',
+                'xInfComp' => 'Pagamento via PIX',
+            ])
+            ->setIbsCbs(array_replace($padrao, $ibsCbs));
+    }
 }

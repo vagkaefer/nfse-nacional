@@ -8,10 +8,11 @@ Biblioteca PHP para integração com o **Sistema Nacional de Nota Fiscal de Serv
 ## Características
 
 - ✅ Emissão de NFS-e (DPS assinada com XMLDSig)
+- ✅ **Reforma Tributária do Consumo**: grupo IBS/CBS na DPS (leiaute 1.01/RTC)
 - ✅ Consulta de NFS-e e de DPS
 - ✅ Cancelamento de NFS-e (evento e101101)
-- ✅ Download do XML e do PDF (DANFSe) da NFS-e
-- ✅ Geração local de DANFSe como fallback (quando o endpoint oficial está em rate limit)
+- ✅ Download do XML da NFS-e
+- ✅ **Geração do DANFSe v2.0** conforme a NT 008/2026, com bloco IBS/CBS
 - ✅ Listagem de NFS-e por faixa de números de DPS
 - ✅ Validação criptográfica de assinaturas XMLDSig
 - ✅ Suporte a ambientes de Produção e Homologação
@@ -115,8 +116,8 @@ $dados = $client->consultarDPS($idDPS);
 // Download do XML (opcionalmente salvando em arquivo)
 $xml = $client->baixarXML($chaveAcesso, '/tmp/nfse.xml');
 
-// Download do PDF. Se o endpoint oficial falhar (rate limit 429 etc.),
-// o DANFSe é gerado localmente a partir do XML.
+// DANFSe v2.0 gerado localmente a partir do XML da NFS-e.
+// A API oficial de DANFSe foi sobrestada em 03/08/2026 (NT 008/2026).
 $pdf = $client->baixarPDF($chaveAcesso, '/tmp/danfse.pdf');
 
 // Cancelamento (código do motivo: 1=Erro na emissão, 2=Serviço não prestado, 9=Outros)
@@ -127,6 +128,37 @@ $eventos = $client->consultarEventos($chaveAcesso);
 
 // Listagem por faixa de números de DPS (1 requisição HTTP por número!)
 $lista = $client->listarNFSePorFaixa('4216909', '00000000000100', '900', 1, 50);
+```
+
+### 4. Reforma Tributária: IBS e CBS
+
+O grupo `IBSCBS` da DPS é opcional. Ao informá-lo, a DPS passa automaticamente
+do leiaute `1.00` para o `1.01` (RTC):
+
+```php
+$dps->setIbsCbs([
+    'finNFSe' => '0',        // 0=NFS-e regular, 1=crédito, 2=débito
+    'cIndOp'  => '110101',   // código indicador da operação (Anexo VII)
+    'indDest' => '0',        // 0=destinatário é o próprio tomador
+    'valores' => [
+        'gIBSCBS' => [
+            'CST'        => '000',     // situação tributária do IBS/CBS
+            'cClassTrib' => '000001',  // classificação tributária
+        ],
+    ],
+]);
+```
+
+No leiaute RTC o campo `cNBS` (código da NBS) passa a ser obrigatório em
+`setServico()`. Subgrupos como `dest`, `imovel`, `gReeRepRes`, `gTribRegular` e
+`gDif` seguem a mesma estrutura de arrays aninhados do Anexo VI.
+
+Os campos criados pela **NT 009** (notas de ajuste, estorno de crédito, bens
+móveis, pagamentos vinculados, `regApIBSCBSSN`, `cAtvSN`) ainda **não constam
+dos XSDs publicados** e só são emitidos com o leiaute estendido ligado:
+
+```php
+$dps->setLeiauteEstendido(true);  // enviar hoje causa rejeição por schema
 ```
 
 ### Tratamento de erros
@@ -190,15 +222,23 @@ src/NFSe/
 │   ├── HttpResponse.php
 │   └── ResponseParser.php       # JSON/XML → array, mapeamento de erros
 ├── Models/
-│   ├── DPS.php                  # XML da DPS
+│   ├── DPS.php                  # Fachada: setters e versão do leiaute
+│   ├── Dps/
+│   │   ├── IbsCbsBuilder.php    # Grupo IBSCBS (Reforma Tributária)
+│   │   ├── PessoaBuilder.php    # Prestador, tomador, destinatário, endereços
+│   │   ├── ValoresBuilder.php   # Serviço, descontos, deduções e tributos
+│   │   └── Xml.php              # Helpers de montagem do DOM
 │   └── PedidoRegistroEvento.php # XML de eventos (cancelamento)
 ├── Services/
 │   └── NFSeClient.php           # Verbos da API
 └── Utils/
     ├── AssinaturaDigital.php    # XMLDSig: assinar e validar
     ├── DANFSeDados.php          # Extração XML → dados do DANFSe
-    ├── DANFSeGenerator.php      # Renderização do PDF (TCPDF)
+    ├── DANFSeGenerator.php      # DANFSe v2.0 (NT 008) via TCPDF
     └── Ids.php                  # IDs de DPS e de eventos
+
+assets/
+└── logo-nfse.png                # Logomarca oficial usada no DANFSe
 ```
 
 ## Exemplos
@@ -214,8 +254,13 @@ ambiente (há um `.env.example`).
 3. **Série**: em produção, utilize a série fornecida pela prefeitura (geralmente "900").
 4. **Data de competência**: não pode ser posterior à data de emissão.
 5. **Endereço do prestador**: quando o prestador é o emitente (tpEmit=1), não informe.
-6. **Rate limit do PDF**: o endpoint oficial de DANFSe retorna 429 com facilidade;
-   para downloads em lote, use `baixarPDF($chave, sleepSeconds: 20)`.
+6. **DANFSe**: a API oficial de geração do PDF foi sobrestada em 03/08/2026
+   (NT 008/2026) — o documento passa a ser produzido pelo próprio emissor, que
+   é o que `baixarPDF()` faz. Para conferir a numeração e os nomes de municípios
+   impressos, passe o mapa `municipios` em `setDanfseOptions()`.
+7. **IBS/CBS**: informar o grupo é opcional em 2026 (as regras de obrigatoriedade
+   estão suspensas), mas o conteúdo enviado é validado. Ao usar `setIbsCbs()`, a
+   DPS passa automaticamente para o leiaute 1.01.
 
 ## Desenvolvimento
 
@@ -238,6 +283,26 @@ NFSE_CERT_PFX=... NFSE_CERT_SENHA=... NFSE_COD_MUN=... NFSE_CNPJ=... \
   vendor/bin/phpunit --group integration
 ```
 
+## Migração v2.0 → v2.1
+
+A v2.1 adequa a biblioteca à Reforma Tributária do Consumo e ao novo DANFSe.
+Mudanças de compatibilidade:
+
+- `baixarPDF()` gera o DANFSe localmente por padrão. O parâmetro
+  `$sleepSeconds` deu lugar a `$tentarOficial` — **quem passava
+  `sleepSeconds: 20` precisa remover o argumento**. A API oficial foi
+  sobrestada em 03/08/2026 pela NT 008/2026.
+- O DANFSe passou a seguir o layout oficial da NT 008 (v2.0). Quem dependia do
+  visual anterior verá um documento diferente — agora conforme a norma.
+- A opção `footerText` do gerador deixou de existir: o rodapé é definido pela
+  NT. Use `municipios`, `logoPath` e `exibirCanhoto` em `setDanfseOptions()`.
+- Descontos agora saem no grupo `vDescCondIncond`, como exige o schema (antes
+  eram emitidos dentro de `vServPrest`, o que gerava rejeição).
+- `DANFSeDados::extrair()` devolve um array bem maior, com os blocos `issqn`,
+  `federal`, `ibscbs` e `destinatario`; valores monetários já vêm formatados e
+  campos ausentes viram `-`.
+- Emitir com o grupo IBS/CBS exige informar `cNBS` em `setServico()`.
+
 ## Migração v1 → v2
 
 A v2 reorganizou a biblioteca. Principais mudanças de compatibilidade:
@@ -246,8 +311,6 @@ A v2 reorganizou a biblioteca. Principais mudanças de compatibilidade:
 - `AssinaturaDigital` recebe um `NFSe\Certificate\Certificado` no construtor
   (antes recebia caminho e senha do PFX).
 - `NFSeClient::gerarIdDPS()` foi removido — use `NFSe\Utils\Ids::dps()`.
-- `baixarPDF()` não dorme mais 20 s por padrão (`$sleepSeconds` agora é `0`)
-  e o fallback local de DANFSe foi reativado.
 - `listarNFSePorFaixa()` propaga erros de rede/HTTP (antes eram silenciosamente
   ignorados); apenas 404 é tratado como "não encontrada".
 - O ID do evento de cancelamento é determinístico (`PRE` + chave + `101101`),

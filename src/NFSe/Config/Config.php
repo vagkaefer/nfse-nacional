@@ -22,7 +22,13 @@ class Config
     public const URL_HOMOLOGACAO_CNC = 'https://adn.producaorestrita.nfse.gov.br/cnc';
     public const URL_HOMOLOGACAO_PDF = 'https://adn.producaorestrita.nfse.gov.br/danfse';
 
-    public const USER_AGENT_PADRAO = 'nfse-nacional-php/2.0';
+    public const USER_AGENT_PADRAO = 'nfse-nacional-php/2.1';
+
+    /**
+     * A API de geração do DANFSe foi sobrestada nesta data pela Nota Técnica
+     * nº 008/2026: desde então o PDF é gerado localmente pelo emissor.
+     */
+    public const DANFSE_API_SOBRESTADA_EM = '2026-08-03';
 
     /**
      * @param int $ambiente Ambiente (1 = Produção, 2 = Homologação)
@@ -31,8 +37,9 @@ class Config
      * @param string $codigoMunicipioIBGE Código do município (7 dígitos)
      * @param string $versaoAplicativo Versão do aplicativo integrador
      * @param string $userAgent User-Agent enviado nas requisições HTTP
-     * @param array<string, mixed> $danfseOptions Opções do gerador local de DANFSe
-     *        (chaves: creator, author, footerText, municipios [codIBGE => nome])
+     * @param array<string, mixed> $danfseOptions Opções do gerador de DANFSe
+     *        (chaves: creator, author, municipios [codIBGE => "Nome / UF"],
+     *        logoPath, exibirCanhoto, fonteTitulos, fonteConteudo, marcaDagua)
      */
     public function __construct(
         private int $ambiente = self::AMBIENTE_HOMOLOGACAO,
