@@ -32,7 +32,7 @@ Biblioteca PHP para integração com o **Sistema Nacional de Nota Fiscal de Serv
 ## Instalação
 
 ```bash
-composer require vagnerkaefer/nfse-nacional
+composer require vagkaefer/nfse-nacional
 ```
 
 ## Uso Básico

@@ -1,5 +1,5 @@
 {
-    "name": "vagnerkaefer/nfse-nacional",
+    "name": "vagkaefer/nfse-nacional",
     "description": "Biblioteca PHP para integração com o Sistema Nacional de Nota Fiscal de Serviço Eletrônica (NFS-e)",
     "type": "library",
     "keywords": [
