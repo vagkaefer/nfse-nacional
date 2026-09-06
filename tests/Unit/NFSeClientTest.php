@@ -19,6 +19,11 @@ final class NFSeClientTest extends TestCase
 {
     private const CHAVE = '12345678901234567890123456789012345678901234567890';
 
+    /**
+     * Contrato OpenAPI oficial da Sefin Nacional, versionado no repositório.
+     */
+    private const OPENAPI = __DIR__ . '/../../docs/v1.json';
+
     private static string $pfxPath;
     private static Certificado $certificado;
 
@@ -80,9 +85,30 @@ final class NFSeClientTest extends TestCase
         );
     }
 
+    /**
+     * Nome do campo do corpo da requisição de evento, lido do contrato OpenAPI
+     * oficial versionado em docs/v1.json — e não escrito à mão, para que o
+     * contrato continue sendo a fonte da verdade.
+     */
+    private function campoDoPedidoDeEvento(): string
+    {
+        $contrato = json_decode((string) file_get_contents(self::OPENAPI), true);
+        $campo = $contrato['definitions']['EventosPostRequest']['required'][0] ?? null;
+
+        $this->assertIsString($campo, 'docs/v1.json deve declarar o campo obrigatório do pedido de evento');
+
+        return $campo;
+    }
+
+    public function testCampoDoPedidoDeEventoSegueOContratoOficial(): void
+    {
+        $this->assertSame('pedidoRegistroEventoXmlGZipB64', $this->campoDoPedidoDeEvento());
+    }
+
     public function testCancelarEnviaEventoAssinadoComIdDeterministico(): void
     {
-        $http = (new StubHttpClient())->enfileirar(new HttpResponse(200, '{"status":"cancelada"}'));
+        // A API responde 201 (Created) ao registrar o evento, não 200.
+        $http = (new StubHttpClient())->enfileirar(new HttpResponse(201, '{"status":"cancelada"}'));
         $cliente = $this->criarCliente($http);
 
         $resultado = $cliente->cancelarNFSe(self::CHAVE, 'Erro na emissão', 1);
@@ -94,7 +120,10 @@ final class NFSeClientTest extends TestCase
         $this->assertSame(Config::URL_HOMOLOGACAO . '/nfse/' . self::CHAVE . '/eventos', $req['url']);
 
         $payload = json_decode((string) $req['body'], true);
-        $xmlEvento = gzdecode((string) base64_decode((string) $payload['pedRegEventoXmlGZipB64'], true));
+        $campo = $this->campoDoPedidoDeEvento();
+        $this->assertArrayHasKey($campo, $payload, 'O corpo deve usar o campo exigido pelo contrato da Sefin');
+
+        $xmlEvento = gzdecode((string) base64_decode((string) $payload[$campo], true));
         $this->assertNotFalse($xmlEvento);
 
         $dom = new \DOMDocument();

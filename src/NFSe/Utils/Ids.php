@@ -34,11 +34,25 @@ final class Ids
     }
 
     /**
-     * ID do pedido de registro de evento (59 caracteres, padrão PRE[0-9]{56}):
-     * "PRE" + chave de acesso (50) + código do tipo de evento (6).
+     * ID do pedido de registro de evento:
+     * "PRE" + chave de acesso (50) + código do tipo de evento (6)
+     * [+ número do pedido de registro do evento (3), a partir do leiaute 1.01].
+     *
+     * Sem $nPedRegEvento gera o formato do leiaute 1.00 (TSIdPedRegEvt,
+     * 59 caracteres, PRE[0-9]{56}); com ele, o do 1.01 (TSIdPedRefEvt,
+     * 62 caracteres, PRE[0-9]{59}).
      */
-    public static function pedRegEvento(string $chaveAcesso, string $tipoEvento = self::EVENTO_CANCELAMENTO): string
-    {
-        return 'PRE' . $chaveAcesso . $tipoEvento;
+    public static function pedRegEvento(
+        string $chaveAcesso,
+        string $tipoEvento = self::EVENTO_CANCELAMENTO,
+        ?int $nPedRegEvento = null,
+    ): string {
+        $id = 'PRE' . $chaveAcesso . $tipoEvento;
+
+        if ($nPedRegEvento === null) {
+            return $id;
+        }
+
+        return $id . str_pad((string) $nPedRegEvento, 3, '0', STR_PAD_LEFT);
     }
 }
