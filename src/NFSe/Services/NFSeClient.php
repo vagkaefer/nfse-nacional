@@ -74,15 +74,23 @@ class NFSeClient
      * Cancela uma NFS-e (evento e101101).
      *
      * @param int $codigoMotivo 1 = Erro na emissão; 2 = Serviço não prestado; 9 = Outros
+     * @param string $versaoLeiaute Leiaute do pedido de evento. O padrão 1.00 é o
+     *                              aceito hoje pela Sefin; 1.01 (RTC) acrescenta
+     *                              nPedRegEvento e amplia o Id.
      * @return array<mixed>
      */
-    public function cancelarNFSe(string $chaveAcesso, string $motivo, int $codigoMotivo = 9): array
-    {
+    public function cancelarNFSe(
+        string $chaveAcesso,
+        string $motivo,
+        int $codigoMotivo = 9,
+        string $versaoLeiaute = PedidoRegistroEvento::LEIAUTE_V1_00,
+    ): array {
         $evento = new PedidoRegistroEvento(
             $chaveAcesso,
             $this->config->getAmbiente(),
             $this->config->getVersaoAplicativo(),
             $this->certificado->getCnpjCpf(),
+            $versaoLeiaute,
         );
 
         $xmlAssinado = $this->assinatura->assinarXML(
@@ -92,7 +100,7 @@ class NFSeClient
         );
 
         $payload = (string) json_encode([
-            'pedRegEventoXmlGZipB64' => base64_encode((string) gzencode($xmlAssinado)),
+            'pedidoRegistroEventoXmlGZipB64' => base64_encode((string) gzencode($xmlAssinado)),
         ]);
 
         return ResponseParser::parse($this->requisitar('POST', "/nfse/{$chaveAcesso}/eventos", $payload));
